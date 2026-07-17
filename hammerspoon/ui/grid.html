@@ -1,0 +1,121 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; margin: 0; font-family: -apple-system, system-ui, sans-serif; }
+  body { background: rgba(20,20,24,0.86); -webkit-backdrop-filter: blur(20px); padding: 24px; overflow-x: hidden; }
+  h1 { color:#fff; font-size:13px; letter-spacing:.08em; text-transform:uppercase; opacity:.6; margin-bottom:16px; }
+  [data-layout="mosaic"] #hdr, [data-layout="bar"] #hdr { display:none; }
+
+  /* ---- list (default) ---- */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:16px; }
+  .card { background:#2a2a30; border-radius:14px; overflow:hidden; cursor:pointer; border:1px solid #3a3a42;
+          transition:transform .08s, border-color .08s; }
+  .card:hover { transform:translateY(-2px); border-color:#6b6bff; }
+  .thumb { width:100%; aspect-ratio:16/10; object-fit:cover; background:#1a1a1f; display:block; }
+  .thumb.ph { display:flex; align-items:center; justify-content:center; color:#555; font-size:32px; }
+  .meta { padding:10px 12px; }
+  .row { display:flex; align-items:center; gap:6px; }
+  .proj { color:#fff; font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .subtitle { color:#c7c7d1; font-size:12px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .detail { color:#9a9aa6; font-size:11px; margin-top:3px; }
+  .host { color:#7aa2ff; font-size:11px; margin-top:3px; font-weight:600; }
+  [data-theme="light"] .subtitle { color:#3a3a44; }
+  .empty { color:#888; text-align:center; padding:60px 0; }
+  .dot { font-size:15px; }
+  .card.compact .meta { padding:13px 15px; }
+  .card.compact { border-left:3px solid #3a3a42; }
+  .card.recent { opacity:.5; }
+  .card.recent:hover { opacity:1; }
+
+  /* ---- mosaic: full-width band, square-photo tiles with the SAME info as the panel ---- */
+  [data-layout="mosaic"] body { overflow-y:auto; }
+  [data-layout="mosaic"] .grid { grid-template-columns:repeat(var(--cols,4),1fr); gap:16px; }
+  [data-layout="mosaic"] .thumb { aspect-ratio:1; }   /* square photo; full meta (proj/subtitle/detail/host) below, like the panel */
+  [data-layout="mosaic"] .empty { padding:24px 0; }
+
+  /* ---- bar: thin bottom strip, emoji + title, horizontal scroll ---- */
+  [data-layout="bar"] body { padding:8px 12px; overflow-x:auto; overflow-y:hidden; white-space:nowrap; }
+  [data-layout="bar"] .grid { display:flex; gap:8px; }
+  [data-layout="bar"] .chip { flex:0 0 auto; display:flex; align-items:center; gap:6px; cursor:pointer;
+        background:#2a2a30; border:1px solid #3a3a42; border-radius:999px; padding:6px 12px; }
+  [data-layout="bar"] .chip:hover { border-color:#6b6bff; }
+  [data-layout="bar"] .chip.recent { opacity:.5; }
+  [data-layout="bar"] .chip.recent:hover { opacity:1; }
+  [data-layout="bar"] .chip .t { color:#eee; font-size:12px; white-space:nowrap; max-width:120px;
+        overflow:hidden; text-overflow:ellipsis; }
+  [data-layout="bar"] .empty { color:#888; font-size:12px; padding:6px; text-align:left; }
+
+  [data-theme="light"] body { background:#f4f4f7; }
+  [data-theme="light"] h1 { color:#1a1a1f; opacity:.6; }
+  [data-theme="light"] .card { background:#fff; border-color:#e0e0e6; }
+  [data-theme="light"] .card:hover { border-color:#6b6bff; }
+  [data-theme="light"] .thumb { background:#eceef2; }
+  [data-theme="light"] .thumb.ph { color:#aaa; }
+  [data-theme="light"] .proj { color:#1a1a1f; }
+  [data-theme="light"] .detail { color:#6a6a76; }
+  [data-theme="light"] .empty { color:#888; }
+  [data-theme="light"] [data-layout="bar"] .chip { background:#fff; border-color:#e0e0e6; }
+  [data-theme="light"] [data-layout="bar"] .chip .t { color:#1a1a1f; }
+</style></head><body>
+  <h1 id="hdr">Claude Dock Station</h1>
+  <div id="grid" class="grid"></div>
+  <script>
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+    function render(cards, theme, layout, opts) {
+      layout = layout || 'list';
+      opts = opts || {};
+      const de = document.documentElement;
+      de.setAttribute('data-theme', theme || 'auto');
+      de.setAttribute('data-layout', layout);
+      const g = document.getElementById('grid');
+      if (layout === 'mosaic') { g.style.setProperty('--cols', opts.cols || 4); }
+      else { g.style.removeProperty('--cols'); }
+      if (!Array.isArray(cards) || !cards.length) {
+        g.innerHTML = '<div class="empty">Nenhuma sessão viva</div>';
+        if (layout === 'mosaic') reportMosaicHeight();
+        return;
+      }
+      if (layout === 'bar') {
+        g.innerHTML = cards.map(c => `
+          <div class="chip${c.kind==='recent'?' recent':''}" onclick="pick('${esc(c.session_id)}','${esc(c.kind||'live')}')">
+            <span class="dot">${esc(c.badge)}</span>
+            <span class="t">${esc(c.title || c.project)}</span>
+          </div>`).join('');
+        return;
+      }
+      // list + mosaic share the card markup; CSS reshapes it per data-layout
+      g.innerHTML = cards.map(c => {
+        const bits = [];
+        if (c.detail) bits.push(esc(c.detail));
+        if (c.age) bits.push(esc(c.age));
+        if (c.host) bits.push('☁ ' + esc(c.host));
+        return `
+        <div class="card${c.thumb ? '' : ' compact'}${c.kind==='recent' ? ' recent' : ''}" onclick="pick('${esc(c.session_id)}','${esc(c.kind||'live')}')">
+          ${c.thumb ? `<img class="thumb" src="${c.thumb}">` : ''}
+          <div class="meta">
+            <div class="row"><span class="dot">${esc(c.badge)}</span><span class="proj">${esc(c.project)}</span></div>
+            ${c.title ? `<div class="subtitle">${esc(c.title)}</div>` : ''}
+            <div class="detail">${bits.join(' · ')}</div>
+          </div>
+        </div>`; }).join('');
+      if (layout === 'mosaic') reportMosaicHeight();
+    }
+    // Mosaic tiles vary in height (thumbnails on/off, meta lines) so the band's real height
+    // is only known after layout. Measure it and let Lua size the webview to fit.
+    function reportMosaicHeight() {
+      requestAnimationFrame(function() {
+        var h = Math.ceil(document.body.scrollHeight);
+        try { window.webkit.messageHandlers.dock.postMessage({action:'mosaicHeight', h:h}); } catch(e) {}
+      });
+    }
+    function pick(id, kind) {
+      window.webkit.messageHandlers.dock.postMessage({action: kind === 'recent' ? 'relaunch' : 'focus', id});
+    }
+  </script>
+</body></html>

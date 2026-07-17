@@ -1,0 +1,6 @@
+/.superpowers/
+
+# runtime state lives outside the repo, but ignore stray local files
+*.log
+.DS_Store
+/tmp/

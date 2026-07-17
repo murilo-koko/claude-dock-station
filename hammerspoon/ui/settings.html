@@ -1,0 +1,157 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+  :root { color-scheme: light dark; } * { box-sizing:border-box; font-family:-apple-system,system-ui,sans-serif; }
+  body { background:#1c1c20; color:#eee; padding:22px; margin:0; }
+  h1 { font-size:16px; margin:0 0 16px; } h2 { font-size:12px; text-transform:uppercase; opacity:.5; margin:18px 0 8px; }
+  label { display:flex; align-items:center; justify-content:space-between; padding:7px 0; font-size:13px; }
+  input[type=text],input[type=number],select { background:#2a2a30; color:#fff; border:1px solid #3a3a42;
+    border-radius:8px; padding:6px 10px; font-size:13px; }
+  .hk { min-width:150px; text-align:center; cursor:pointer; }
+  button { background:#5b5bff; color:#fff; border:0; border-radius:9px; padding:9px 16px; font-size:13px; cursor:pointer; }
+  .ghost { background:#33333c; } .danger { background:#803030; }
+  .bar { display:flex; gap:8px; margin-top:20px; flex-wrap:wrap; }
+  .diag { font-size:12px; opacity:.8; }
+</style></head><body>
+  <h1>⚙️ Claude Dock Station</h1>
+
+  <h2>Atalho do overlay</h2>
+  <label>Combinação <span id="hk" class="hk" onclick="record()">clique e aperte</span></label>
+
+  <h2>Cascas ativas</h2>
+  <label>Overlay (hotkey) <input type="checkbox" id="s_overlay"></label>
+  <label>Menu bar <input type="checkbox" id="s_menubar"></label>
+
+  <h2>Vista na tela (uma por vez)</h2>
+  <label>Vista <select id="view" onchange="syncViewSections()">
+    <option value="none">Nenhuma</option>
+    <option value="panel">Painel fixo</option>
+    <option value="mosaic">Mosaico (faixa)</option>
+    <option value="bar">Barra</option>
+  </select></label>
+  <label>Monitor <select id="vscreen"></select></label>
+
+  <div id="cfg-panel">
+    <h2>Painel fixo</h2>
+    <label>Canto <select id="corner">
+      <option value="topRight">Superior direito</option><option value="topLeft">Superior esquerdo</option>
+      <option value="bottomRight">Inferior direito</option><option value="bottomLeft">Inferior esquerdo</option>
+    </select></label>
+  </div>
+
+  <div id="cfg-mosaic">
+    <h2>Mosaico (faixa)</h2>
+    <label>Borda <select id="medge">
+      <option value="top">Superior</option><option value="bottom">Inferior</option>
+    </select></label>
+    <label>Colunas (0 = auto) <input type="number" id="mcols" min="0" max="12" style="width:70px"></label>
+    <label>Tamanho do quadrado (px) <input type="number" id="mtile" min="80" max="400" style="width:70px"></label>
+    <label>Máx cards (0 = todos) <input type="number" id="mmax" min="0" max="100" style="width:70px"></label>
+  </div>
+
+  <div id="cfg-bar">
+    <h2>Barra</h2>
+    <label>Borda <select id="bedge">
+      <option value="top">Superior</option><option value="bottom">Inferior</option>
+    </select></label>
+    <label>Altura (px) <input type="number" id="bheight" min="32" max="120" style="width:70px"></label>
+    <label>Máx cards (0 = todos) <input type="number" id="bmax" min="0" max="100" style="width:70px"></label>
+  </div>
+
+  <h2>Outros</h2>
+  <label>Miniaturas ao vivo <input type="checkbox" id="thumbnails"></label>
+  <label>Intervalo (s) <input type="number" id="interval" min="1" max="10" style="width:70px"></label>
+  <label>Tema <select id="theme"><option>auto</option><option>dark</option><option>light</option></select></label>
+  <label>App host <input type="text" id="host" style="width:120px"></label>
+
+  <h2>Recentes (reabrir projeto)</h2>
+  <div class="diag" style="opacity:.5">Só esquece do launcher — não apaga o histórico da conversa.</div>
+  <div id="recents"></div>
+  <div style="text-align:right;margin-top:6px">
+    <button class="ghost" onclick="if(confirm('Esquecer todos os recentes?')) msg({action:'clearRecents'})">Limpar todos</button>
+  </div>
+
+  <h2>Permissões</h2>
+  <div class="diag" id="diag">verificando…</div>
+
+  <div class="bar">
+    <button onclick="save()">Salvar</button>
+    <button class="ghost" onclick="msg({action:'perm'})">Abrir permissões</button>
+    <button class="ghost" onclick="msg({action:'reinstall'})">Reinstalar hooks</button>
+    <button class="danger" onclick="msg({action:'uninstall'})">Desinstalar</button>
+  </div>
+
+  <script>
+    let cfg = {};
+    let hk = { mods:[], key:'' };
+    function msg(o){ window.webkit.messageHandlers.dockcfg.postMessage(o); }
+    function fmtHk(h){ return (h.mods||[]).map(m=>({cmd:'⌘',shift:'⇧',alt:'⌥',ctrl:'⌃'}[m]||m)).join('') + (h.key||'').toUpperCase(); }
+    function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+    // Render the recents management list (called by Lua on load and after forget/clear).
+    function renderRecents(list){
+      var box = document.getElementById('recents');
+      if(!list || !list.length){ box.innerHTML = '<div class="diag" style="opacity:.5;padding:6px 0">Nenhum recente ainda.</div>'; return; }
+      box.innerHTML = list.map(function(r){
+        var host = r.host ? ' · ☁ '+esc(r.host) : '';
+        return '<label><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">'+
+          esc(r.project)+' <span style="opacity:.55">'+esc(r.title||'')+'</span> <span style="opacity:.4">'+esc(r.age||'')+host+'</span></span>'+
+          '<button class="ghost" style="padding:3px 9px" onclick="msg({action:\'forgetRecent\', key:\''+esc(r.key)+'\'})">✕</button></label>';
+      }).join('');
+    }
+    // called by Lua:
+    function load(c, perm, screens, recents){
+      cfg = c; hk = c.hotkey || {mods:[],key:''};
+      document.getElementById('hk').textContent = fmtHk(hk);
+      document.getElementById('s_overlay').checked = c.shells.overlay;
+      document.getElementById('s_menubar').checked = c.shells.menubar;
+      document.getElementById('view').value = c.shells.view || 'none';
+      const screenOpts = '<option value="main">Principal (tela ativa)</option>' +
+        (screens||[]).map(s => `<option value="${s.uuid}">${s.name}</option>`).join('');
+      const vsc = document.getElementById('vscreen');
+      vsc.innerHTML = screenOpts; vsc.value = c.screen || 'main';
+      document.getElementById('corner').value = c.panel.corner;
+      const m = c.mosaic || {}, b = c.bar || {};
+      document.getElementById('medge').value = m.edge || 'top';
+      document.getElementById('mcols').value = m.columns || 0;
+      document.getElementById('mtile').value = m.tile || 150;
+      document.getElementById('mmax').value = m.max || 0;
+      document.getElementById('bedge').value = b.edge || 'bottom';
+      document.getElementById('bheight').value = b.height || 52;
+      document.getElementById('bmax').value = b.max || 0;
+      syncViewSections();
+      document.getElementById('thumbnails').checked = c.thumbnails;
+      document.getElementById('interval').value = c.interval_secs;
+      document.getElementById('theme').value = c.theme;
+      document.getElementById('host').value = c.host_app;
+      document.getElementById('diag').textContent =
+        (perm.accessibility ? '✅' : '❌') + ' Acessibilidade   ' +
+        (perm.screen ? '✅' : '❌') + ' Gravação de Tela';
+      renderRecents(recents);
+    }
+    function setHotkey(h){ hk = h; document.getElementById('hk').textContent = fmtHk(h); }
+    function record(){ document.getElementById('hk').textContent = 'aperte a combinação…'; msg({action:'recordHotkey'}); }
+    // Show only the config section for the currently-selected on-screen view.
+    function syncViewSections(){
+      var v = document.getElementById('view').value;
+      document.getElementById('cfg-panel').style.display  = v === 'panel'  ? '' : 'none';
+      document.getElementById('cfg-mosaic').style.display = v === 'mosaic' ? '' : 'none';
+      document.getElementById('cfg-bar').style.display    = v === 'bar'    ? '' : 'none';
+    }
+    function save(){
+      msg({ action:'save', config: {
+        hotkey: hk,
+        shells: { overlay:s_overlay.checked, menubar:s_menubar.checked, view: document.getElementById('view').value },
+        screen: vscreen.value,
+        panel: { corner: corner.value,
+                 width: (cfg.panel&&cfg.panel.width)||300, height: (cfg.panel&&cfg.panel.height)||420 },
+        mosaic: { edge: medge.value, columns: parseInt(mcols.value)||0,
+                  tile: parseInt(mtile.value)||150, max: parseInt(mmax.value)||0 },
+        bar: { edge: bedge.value, height: parseInt(bheight.value)||52, max: parseInt(bmax.value)||0 },
+        thumbnails: thumbnails.checked,
+        interval_secs: parseInt(interval.value) || 1,
+        theme: theme.value, host_app: host.value, stale_secs: cfg.stale_secs || 900,
+        needs_after_secs: cfg.needs_after_secs,
+        remotes: cfg.remotes,
+        remote_interval_secs: cfg.remote_interval_secs,
+      }});
+    }
+  </script>
+</body></html>
