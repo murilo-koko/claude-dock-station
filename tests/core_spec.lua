@@ -187,6 +187,24 @@ core.upsert_recent(ostore, {cwd="/opt/clients/globex", project="globex", host="v
 local oc=0; for _ in pairs(ostore) do oc=oc+1 end
 t.eq(oc, 1, "root/home absent (old hook) -> still tracked")
 
+t.describe("temp roots are not windows, with or without a trailing path")
+-- The temp check used to anchor on '^/tmp/', which requires a segment AFTER the slash — so a
+-- session sitting AT the temp root itself slipped through and the launcher grew a 'tmp' card.
+-- Every form has to be rejected: the bare root, the /private twin macOS resolves it to, and
+-- the /var/folders sandbox. A path merely STARTING with those letters is still a real project.
+local tstore = {}
+for _, cwd in ipairs({ "/tmp", "/private/tmp", "/var/folders",
+                       "/tmp/", "/tmp/claude-1000/-opt-apps-crm/abc/scratchpad" }) do
+  core.upsert_recent(tstore, {cwd=cwd, project="whatever", host="vps"}, 100)
+end
+local tc=0; for _ in pairs(tstore) do tc=tc+1 end
+t.eq(tc, 0, "temp roots and their subpaths are never tracked as windows")
+-- Guard the other side: the denylist must not swallow a project whose name merely starts
+-- with a temp segment. '/opt/apps/tmpl' is a real folder, not the temp root.
+local tkeep = {}
+core.upsert_recent(tkeep, {cwd="/opt/apps/tmpl", project="tmpl", host="vps"}, 100)
+t.eq(tkeep["vps|/opt/apps/tmpl"].project, "tmpl", "a project whose name starts with 'tmp' is still a window")
+
 t.describe("title-only inheritance is limited to throwaway cwds")
 -- Regression: build_deck let ANY title-only card borrow a sibling's folder, so a LOCAL
 -- session in its own repo inherited an unrelated remote project's name — the real cwd
@@ -323,6 +341,117 @@ t.eq(segn, "fase0-auth", "worktree keeps its own identity")
 local wp, segp = core.match_window("/opt/apps/webapp/production/repo/supabase/functions", nestwins, "", "")
 t.eq(wp and wp.id, 20, "the parent repo's own session still links to the parent window")
 t.eq(segp, "webapp", "parent session labeled webapp")
+
+t.describe("container_child: a declared container names its direct child")
+-- A container is a folder whose DIRECT CHILDREN are projects; the container itself never is.
+-- This is the signal that survives when no window and no repo can name the project.
+-- Deepest listed FIRST, deliberately: the code ranks by depth, not position. ONE ordering can
+-- never prove order-independence — it only rules out the OPPOSITE order-dependent bug. Listing
+-- shallow first leaves a last-match implementation alive; listing deep first leaves a first-match
+-- one alive. That is why the deepest-wins case below is asserted at BOTH orderings; together they
+-- kill first-match, last-match and shortest-string alike.
+local CONT = { "/opt/clients/globex/sites", "/opt/clients" }
+t.eq(core.container_child("/opt/clients/acme", CONT), "acme",
+     "direct child of a container is the project")
+t.eq(core.container_child("/opt/clients/acme/production/repo", CONT), "acme",
+     "a deep cwd still resolves to the container's direct child")
+-- Nested containers: the NARROWER declaration must refine the broader one, or declaring a
+-- sub-container would be pointless — '/opt/clients' alone would keep answering 'globex'.
+t.eq(core.container_child("/opt/clients/globex/sites/arcade", CONT), "arcade",
+     "the DEEPEST container wins over a shallower one")
+-- Same expectation with the declaration order flipped. Config is hand-written, so the broad
+-- container may well be listed after the narrow one; the answer must not depend on that.
+t.eq(core.container_child("/opt/clients/globex/sites/arcade",
+     { "/opt/clients", "/opt/clients/globex/sites" }), "arcade",
+     "deepest wins regardless of declaration order (shallow listed first)")
+-- The container itself is not a project: it has no child to name.
+t.eq(core.container_child("/opt/clients", CONT), nil, "the container itself is never a project")
+-- Prefix guard: a sibling whose name merely starts with the container's name is NOT inside it.
+t.eq(core.container_child("/opt/clients-archive/acme", CONT), nil,
+     "a name that only shares the container's prefix is not contained")
+-- Absent config must be inert — this is what keeps the shipped default ({}) a no-op.
+t.eq(core.container_child("/opt/clients/acme", {}), nil, "no containers -> no opinion")
+t.eq(core.container_child("/opt/clients/acme", nil), nil, "nil containers -> no opinion")
+-- A trailing slash in hand-edited config must not defeat the match.
+t.eq(core.container_child("/opt/clients/acme", { "/opt/clients/" }), "acme",
+     "a trailing slash in the declared path is tolerated")
+-- Hand-edited JSON can put anything in this list. A non-string entry must be skipped, not
+-- indexed: core.container_child runs on every render tick, so an error here takes the whole
+-- dock down rather than degrading one card.
+t.eq(core.container_child("/opt/clients/acme", { 5, true, "/opt/clients" }), "acme",
+     "non-string container entries are skipped, not indexed")
+
+t.describe("project name = the DEEPEST signal (container / git root / window folder)")
+-- The three signals compete on equal footing and the deepest one in the cwd wins. A tie is
+-- reachable only between case-variants of ONE name (depth d is a single position, so both
+-- tying labels are the same segment); consideration order settles the casing, never which
+-- project. See resolve_project's comment in core.lua.
+-- Deepest listed FIRST, same reasoning as CONT above: order-dependent iteration would answer
+-- 'globex' instead of the deeper 'arcade'/'legal-app', so this ordering is what makes the
+-- assertions below exercise depth-ranking instead of passing by list position.
+local UCONT = { "/opt/clients/globex/sites", "/opt/clients" }
+-- ONE window opened at the client root — the scenario that collapses today. Every session
+-- below it matched the client's name because the window folder is coarser than the project.
+local uwin = { { id = 1, title = "arq.ts — globex [SSH: my-vps]" } }
+local function name_of(cwd, root, containers)
+  local st = { { session_id = "s", cwd = cwd, root = root, state = "idle", updated_at = 100 } }
+  local d = core.build_deck(st, uwin, 100, { containers = containers })
+  return d[1] and d[1].project or nil
+end
+-- Baseline: without containers, both sub-projects collapse into the window's folder.
+t.eq(name_of("/opt/clients/globex/sites/arcade", "", nil), "globex",
+     "no containers -> the coarse window folder still wins (today's behaviour)")
+-- With the sub-container declared, each project keeps its own identity.
+t.eq(name_of("/opt/clients/globex/sites/arcade", "", UCONT), "arcade",
+     "container beats a shallower window folder")
+t.eq(name_of("/opt/clients/globex/sites/legal-app", "", UCONT), "legal-app",
+     "sibling project under the same container stays separate")
+-- No windows at all: the ONLY signal left is the container. With uwin passed instead,
+-- Pass 1b would answer "globex" from the title on its own and the container branch could
+-- be deleted without failing this assertion.
+local function name_no_window(cwd, root, containers)
+  local st = { { session_id = "s", cwd = cwd, root = root, state = "idle", updated_at = 100 } }
+  local d = core.build_deck(st, {}, 100, { containers = containers })
+  return d[1] and d[1].project or nil
+end
+t.eq(name_no_window("/opt/clients/globex/docs/Campanha-Aniversario/_anexos", "", UCONT), "globex",
+     "container names a repo-less project with NO window open at all")
+-- Same cwd, no container: the deep leaf is all that is left. This is the pair that proves
+-- the container did the work.
+t.eq(name_no_window("/opt/clients/globex/docs/Campanha-Aniversario/_anexos", "", nil), "_anexos",
+     "without the container, a repo-less deep cwd falls back to its leaf")
+-- A git root DEEPER than the container must win: a worktree has its own root, so it keeps its
+-- identity without anyone declaring '.../worktrees' as a container.
+t.eq(name_of("/opt/apps/webapp/worktrees/arcade", "/opt/apps/webapp/worktrees/arcade",
+             { "/opt/apps" }), "arcade",
+     "a deeper git root beats the container child")
+
+-- The window folder must WIN when it is deeper than the container child: a window opened
+-- directly on the sub-project outranks a container that only names its parent. Without the
+-- `seg` line in resolve_project the fallback chain silently answers with the container child.
+local deepwin = { { id = 9, title = "arq.ts — arcade [SSH: my-vps]" } }
+local dst = { { session_id = "s", cwd = "/opt/clients/globex/sites/arcade/src",
+                root = "", state = "idle", updated_at = 100 } }
+t.eq(core.build_deck(dst, deepwin, 100, { containers = { "/opt/clients" } })[1].project, "arcade",
+     "a window folder deeper than the container child wins")
+
+-- folder_by_window must carry the RAW window folder, not the resolved name. A scratchpad
+-- session has no folder of its own and borrows this from a sibling in the same window; if the
+-- container's resolved name were stored instead, the scratchpad card would inherit a label
+-- that is not the folder VS Code shows.
+local shwin = { { id = 11, title = "arq.ts — globex [SSH: my-vps]" } }
+local shared = {
+  { session_id = "real", cwd = "/opt/clients/globex/sites/arcade", root = "",
+    state = "idle", updated_at = 100 },
+  { session_id = "scratch", cwd = "/tmp/claude-1000/-opt-clients-globex/ab/scratchpad",
+    title = "arq.ts", state = "idle", updated_at = 100 },
+}
+local shby = {}
+for _, c in ipairs(core.build_deck(shared, shwin, 100, { containers = { "/opt/clients/globex/sites" } })) do
+  shby[c.session_id] = c
+end
+t.eq(shby.real.project, "arcade", "the real session is named by its container child")
+t.eq(shby.scratch.project, "globex", "the scratchpad borrows the RAW window folder, not the resolved name")
 
 t.describe("prune")
 local has = function(s) return s.cwd == "/live" end

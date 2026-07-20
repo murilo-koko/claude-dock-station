@@ -64,11 +64,17 @@ end
 
 -- cwds that are never a real VS Code project window: Claude scratchpads and OS temp dirs.
 -- (A session running in one can still match a window by conversation-title, so filter the path.)
+-- Matched with is_within, NOT a '^/tmp/' prefix: that pattern demands a segment after the slash,
+-- so a session sitting AT the root leaked through and the launcher grew a 'tmp' card. is_within
+-- accepts the bare root and its subpaths while still rejecting a mere name prefix ('/opt/apps/tmpl').
+local TEMP_ROOTS = { "/tmp", "/private/tmp", "/var/folders", "/private/var/folders" }
 local function is_temp_cwd(cwd)
   cwd = cwd or ""
-  return cwd:find("/scratchpad", 1, true) ~= nil
-      or cwd:match("^/tmp/") ~= nil or cwd:match("^/private/tmp/") ~= nil
-      or cwd:match("^/var/folders/") ~= nil or cwd:match("^/private/var/folders/") ~= nil
+  if cwd:find("/scratchpad", 1, true) ~= nil then return true end
+  for _, root in ipairs(TEMP_ROOTS) do
+    if is_within(cwd, root) then return true end
+  end
+  return false
 end
 
 -- The folder a VS Code window is opened at, read off its title. The default title is
@@ -142,6 +148,28 @@ local function cwd_segment_depth(cwd, folder)
     if seg:lower() == want then found = depth end
   end
   return found
+end
+
+-- The project a declared container folder names. A container is a folder whose DIRECT CHILDREN
+-- are projects ("/opt/clients" -> acme, globex); the container itself never is. This is the only
+-- naming signal that needs neither a repo nor an open window, which is exactly the gap it fills:
+-- a client folder holding several projects, opened as ONE window, collapses every session under
+-- it to the client's name because the window folder is coarser than the project.
+-- Containers may nest, and the DEEPEST match wins, so a narrower declaration always refines a
+-- broader one. Matched with is_within, so a sibling sharing only a name prefix is not contained.
+function core.container_child(cwd, containers)
+  if not cwd or cwd == "" then return nil end
+  local best_child, best_len = nil, -1
+  for _, dir in ipairs(containers or {}) do
+    if type(dir) == "string" and dir ~= "" then
+      local d = dir:gsub("/+$", "")
+      if #d > best_len and cwd ~= d and is_within(cwd, d) then
+        local child = cwd:sub(#d + 2):match("^([^/]+)")
+        if child then best_child, best_len = child, #d end
+      end
+    end
+  end
+  return best_child
 end
 
 -- Whole-token containment: `seg` must sit in `wt` flanked by non-word chars (or edges),
@@ -225,6 +253,31 @@ local STATUS = {
   idle      = { badge = "🏖️", rank = 3 },
 }
 
+-- Name a card by whichever signal sits DEEPEST in the cwd: the container child, the git root,
+-- or the folder the window shows. Not a precedence chain: depth is a name's DEEPEST occurrence,
+-- so a tie is reachable only when two labels are the SAME cwd segment apart from casing — strict
+-- '>' then just picks which casing wins, never which project. A worktree outranks a container
+-- because its root sits STRICTLY deeper, not because of consideration order.
+local function consider(cwd, label, best, best_depth)
+  if label and label ~= "" then
+    local d = cwd_segment_depth(cwd, label)
+    if d and d > best_depth then return label, d end
+  end
+  return best, best_depth
+end
+
+local function resolve_project(cwd, root, seg, containers)
+  local best, bd = nil, 0
+  best, bd = consider(cwd, core.container_child(cwd, containers), best, bd)
+  best, bd = consider(cwd, root_label(root), best, bd)
+  best, bd = consider(cwd, seg, best, bd)
+  -- Fall back exactly as before when no signal is a cwd segment (a title-only match reports
+  -- no folder at all, and build_deck's inheritance pass handles that case afterwards). `or seg`
+  -- is defensive, not expected to be reached: every non-nil seg is itself a cwd segment by
+  -- construction, so consider() above would already have set best from it.
+  return best or seg or root_label(root) or project_label(cwd)
+end
+
 function core.to_card(state, now, needs_after)
   needs_after = needs_after or 30
   local age = math.max(0, (now or 0) - (state.updated_at or 0))
@@ -285,10 +338,10 @@ function core.build_deck(states, windows, now, opts)
     -- Only a card with NO folder of its own may borrow one (see the inheritance pass below).
     -- A real cwd that merely shares a conversation-title prefix must keep its own name.
     card._title_only = w ~= nil and seg == nil and is_temp_cwd(s.cwd)
-    if seg then
-      card.project = seg   -- window-anchored: label = the folder VS Code shows
-      if w and w.id ~= nil then folder_by_window[w.id] = seg end
-    end
+    card.project = resolve_project(s.cwd, s.root, seg, opts.containers)
+    -- folder_by_window keeps the raw WINDOW folder, not the resolved name: it exists so a
+    -- scratchpad sibling can borrow the folder VS Code actually shows.
+    if seg and w and w.id ~= nil then folder_by_window[w.id] = seg end
     cards[#cards+1] = card
   end
   -- A session in a throwaway cwd (scratchpad/temp) links to its VS Code window only by the
@@ -376,15 +429,17 @@ function core.migrate_view(cfg)
 end
 
 -- === Recents launcher ========================================================
--- A "recent" is a WINDOW (a VS Code folder), not a session/tab: many Claude conversations
--- share one window, so we key by host+cwd to collapse every tab in a folder to ONE entry.
+-- Keyed by host + the resolved project's folder, not a session/tab: usually one key per VS Code
+-- window, but ANY signal deeper than the window folder — a container child or a nested git root
+-- (worktree, submodule) — can resolve two tabs of one window to two different projects. That
+-- happens with no container declared at all, so it is not a container-only case.
 function core.window_key(host, cwd)
   return (host and host ~= "" and host or "local") .. "|" .. (cwd or "")
 end
 
--- The folder VS Code opens the window at: the cwd truncated at the project segment (the
--- window-anchored label from build_deck). Deploy cwds like …/webapp/production/repo -> …/webapp,
--- so every subfolder session of one window collapses to the same key. Falls back to the full cwd.
+-- The cwd truncated at the RESOLVED project segment — whichever signal won in resolve_project
+-- (container child, git root, or window folder), not necessarily the window's own folder.
+-- Deploy cwds like …/webapp/production/repo -> …/webapp. Falls back to the full cwd.
 function core.workspace_path(cwd, project)
   if not cwd or cwd == "" or not project or project == "" then return cwd end
   local acc = ""
@@ -395,8 +450,8 @@ function core.workspace_path(cwd, project)
   return cwd
 end
 
--- Upsert a live card into the recents store, keyed by its WINDOW = the workspace folder
--- (host + folder VS Code opens), so every subfolder/tab of one window is a single entry.
+-- Upsert a live card into the recents store, keyed by host + the RESOLVED project's folder
+-- (see workspace_path) — not necessarily the folder VS Code opens.
 function core.upsert_recent(store, card, now)
   if not card or not card.cwd or card.cwd == "" or is_temp_cwd(card.cwd) then return store end
   -- Not every cwd is a folder you'd reopen as a project. The signal is the HOME the hook
@@ -407,8 +462,8 @@ function core.upsert_recent(store, card, now)
   if card.home and card.home ~= "" then
     if card.cwd == card.home or is_within(card.cwd, card.home .. "/.claude") then return store end
   end
-  -- Key by the WORKSPACE folder (what VS Code opens), NOT the git root: acme's repo root is
-  -- '…/acme/production' but its window is opened at '…/acme'.
+  -- Key by the RESOLVED project's folder (whichever signal won in resolve_project), not
+  -- necessarily what VS Code opens: a worktree's deeper git root now wins its own key.
   local ws = core.workspace_path(card.cwd, card.project)
   store[core.window_key(card.host, ws)] = {
     cwd = ws, project = card.project, host = card.host,

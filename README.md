@@ -75,11 +75,20 @@ estão abertas agora** e **🕘 nas fechadas**. Clique numa aberta pra focá-la;
 fechada, o dock **reabre a pasta no VS Code** — janela **Remote-SSH** pro host
 certo (a VPS) se for remota, ou local caso contrário.
 
-- **Janelas, não abas**: os recentes são deduplicados por **pasta do workspace**
-  (host + a pasta que o VS Code abre), então todas as conversas/subpastas de uma
-  janela viram **uma** entrada. Scratchpads e pastas temporárias são ignorados.
-  Guardado em `~/.claude-dock-station/recents.json` (só o observado — sem crawl),
-  limitado às 50 janelas mais recentes.
+- **Janelas, não abas**: os recentes são deduplicados por **pasta do projeto
+  resolvido** (host + a pasta do sinal que venceu — ver "Como o nome do projeto é
+  decidido"), então as conversas de uma janela normalmente viram **uma** entrada.
+  Normalmente, não sempre: se uma subpasta tem um sinal mais fundo que a pasta da
+  janela — um container, ou um repo aninhado (worktree, submodule) — ela ganha
+  entrada própria. Scratchpads e pastas temporárias são ignorados. Guardado em
+  `~/.claude-dock-station/recents.json` (só o observado — sem crawl), limitado às
+  50 janelas mais recentes.
+- **Quando o nome de um projeto muda** — ao declarar um container, ou num worktree
+  /submodule depois desta versão — uma pasta já listada pode aparecer **duas
+  vezes**: a entrada antiga (nome anterior) e a nova. A antiga continua
+  funcionando, mas nunca mais é atualizada, e **não some sozinha**: o corte por
+  idade só age acima de 50 entradas, e a lista das Configurações não tem limite.
+  Se incomodar, remova no **✕** da seção Recentes.
 - **Gerenciar**: nas Configurações, a seção **Recentes** lista tudo com um **✕**
   por item e **Limpar todos** — só esquece do launcher, **não apaga** o histórico.
 - O `code` é resolvido do bundle do app host, então não precisa do `code` no PATH.
@@ -259,10 +268,51 @@ poderia adivinhar. Além do estado, ele emite:
 - **`home`** — o `$HOME` da máquina dona do `cwd`. Marca o que nunca é uma janela
   de projeto: a própria home e o cache do Claude em `~/.claude`.
 
-O label é o primeiro segmento não-genérico do `root` (e não o `basename` dele:
-uma raiz de repo pode ser a pasta de ambiente, ex. `/opt/clients/acme/production`
-→ `acme`). Sem `root`, cai na heurística de segmentos sobre o `cwd`. Campos
-ausentes = hook antigo → comportamento anterior, sem regressão.
+O nome do card vem de até três sinais, que **competem pela profundidade no
+`cwd`** — não é uma cadeia de prioridade, vence quem tiver o nome no segmento
+mais fundo:
+
+- o **container** declarado em `project_containers` (abaixo);
+- a **raiz do git** (`root`, acima) — vira nome pelo primeiro segmento
+  não-genérico dela, e não o `basename`: uma raiz de repo pode ser a própria
+  pasta de ambiente, ex. `/opt/clients/acme/production` → `acme`;
+- a **pasta que a janela do VS Code mostra** — o segmento do `cwd` que casou
+  com o título da janela.
+
+É essa competição por profundidade que faz um worktree ganhar nome próprio de
+graça: a raiz do seu próprio git fica mais funda no `cwd` do que um container
+declarado acima dele, então normalmente ninguém precisa declarar `.../worktrees`.
+A mesma regra vale pra qualquer repo aninhado dentro de outro — submodule, repo
+vendorizado —, então uma sessão dentro dele é nomeada pelo repo aninhado, não
+pelo projeto pai.
+
+**Com uma ressalva:** o nome tirado do `root` pula segmentos genéricos
+(`main`, `staging`, `production`, `worktrees`…). Se a pasta do worktree se
+chama justamente `main`, o `root` pula ela e cai num ancestral —
+`/opt/apps/webapp/worktrees/main` vira `webapp`. É exatamente aí que declarar
+`/opt/apps/webapp/worktrees` como container resolve: o filho direto é usado
+como está, sem filtro de genérico, então o card volta a se chamar `main`.
+
+`project_containers` (default `[]`) lista pastas cujos **filhos diretos** são
+projetos — a pasta declarada em si nunca vira nome de card, e containers podem
+se aninhar, valendo sempre o mais fundo. Existe pra um caso que nem `root` nem
+a janela resolvem sozinhos: uma pasta de cliente com vários projetos dentro,
+aberta como **uma única janela** no VS Code — sem o container, toda sessão ali
+herdaria o nome do cliente.
+
+Nenhum container vem configurado por padrão: `project_containers` nasce vazio
+(`[]`), do mesmo jeito que `remotes` — a chave também não vem no `config.json`
+default gerado pelo `install.sh`, então quem tem uma pasta assim declara a
+própria:
+
+```json
+{ "project_containers": ["/opt/clients", "/opt/clients/<cliente>/sites"] }
+```
+
+Sem nenhum dos três sinais casando um segmento do `cwd`, o card cai no primeiro
+segmento não-genérico do `root`, senão na heurística de segmentos sobre o
+próprio `cwd`. Campos ausentes = hook antigo → comportamento anterior, sem
+regressão.
 
 ## Testes
 

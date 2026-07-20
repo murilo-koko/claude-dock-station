@@ -21,6 +21,7 @@ local DEFAULTS = {
   needs_after_secs = 30,         -- a tool call stuck this long (permission prompt) -> ⚠️ needs you
   remotes = {},                  -- SSH hosts whose Claude state to pull into the deck
   remote_interval_secs = 3,      -- how often to poll remotes (SSH is slower than the render tick)
+  project_containers = {},       -- folders whose DIRECT CHILDREN are projects; empty = path heuristic only
 }
 
 function M.loadConfig()
@@ -75,7 +76,8 @@ function M.buildDeck(want_thumbs)
   end
   local windows = vscodeWindows()
   local cards = core.build_deck(states, windows, os.time(),
-    { stale_secs = M.config.stale_secs, needs_after = M.config.needs_after_secs })
+    { stale_secs = M.config.stale_secs, needs_after = M.config.needs_after_secs,
+      containers = M.config.project_containers })
   for _, c in ipairs(cards) do
     if c.window and want_thumbs and M.config.thumbnails then
       local w = c.window._win
