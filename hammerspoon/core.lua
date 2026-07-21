@@ -62,6 +62,16 @@ local function is_within(path, dir)
   return path == dir or path:sub(1, #dir + 1) == dir .. "/"
 end
 
+-- A cwd that is the home dir itself, or inside ~/.claude. Such a session is not in a project,
+-- so labeling it by the home's leaf segment ("dev", "claude") reads as a fake project named
+-- after the user. `home` is the $HOME the hook emits for the machine owning the cwd (nil for old
+-- hooks). This is the same signal upsert_recent uses to keep these out of the launcher.
+local HOME_LABEL = "~"
+local function is_home_cwd(cwd, home)
+  if not cwd or not home or home == "" then return false end
+  return cwd == home or is_within(cwd, home .. "/.claude")
+end
+
 -- cwds that are never a real VS Code project window: Claude scratchpads and OS temp dirs.
 -- (A session running in one can still match a window by conversation-title, so filter the path.)
 -- Matched with is_within, NOT a '^/tmp/' prefix: that pattern demands a segment after the slash,
@@ -292,7 +302,8 @@ function core.to_card(state, now, needs_after)
   local meta = STATUS[status]
   return {
     session_id = state.session_id,
-    project    = root_label(state.root) or project_label(state.cwd),
+    project    = is_home_cwd(state.cwd, state.home) and HOME_LABEL
+                 or root_label(state.root) or project_label(state.cwd),
     cwd        = state.cwd,
     root       = state.root,   -- git workspace root; "" = no repo, nil = hook predates it
     home       = state.home,   -- $HOME on the machine owning the cwd (marks non-project cwds)
@@ -338,7 +349,8 @@ function core.build_deck(states, windows, now, opts)
     -- Only a card with NO folder of its own may borrow one (see the inheritance pass below).
     -- A real cwd that merely shares a conversation-title prefix must keep its own name.
     card._title_only = w ~= nil and seg == nil and is_temp_cwd(s.cwd)
-    card.project = resolve_project(s.cwd, s.root, seg, opts.containers)
+    card.project = is_home_cwd(s.cwd, s.home) and HOME_LABEL
+                   or resolve_project(s.cwd, s.root, seg, opts.containers)
     -- folder_by_window keeps the raw WINDOW folder, not the resolved name: it exists so a
     -- scratchpad sibling can borrow the folder VS Code actually shows.
     if seg and w and w.id ~= nil then folder_by_window[w.id] = seg end

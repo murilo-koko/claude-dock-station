@@ -532,11 +532,26 @@ function M.showSettings()
     M.settings:url("file://" .. UI .. "settings.html")
   end
   M.settings:show():bringToFront(true)
-  hs.timer.doAfter(0.2, function()
-    M.settings:evaluateJavaScript("load(" .. hs.json.encode(M.config) .. ","
-      .. hs.json.encode(M.permissionStatus()) .. "," .. hs.json.encode(screenList()) .. ","
-      .. hs.json.encode(recentsForSettings()) .. ")")
-  end)
+  -- Push config only once the webview reports its DOM is ready. A fixed delay used to
+  -- race the page load: load() would run against an empty document, populate nothing
+  -- (every dropdown, incl. Monitor, left blank), and a Save then wrote that blank form
+  -- over the whole config. Polling __ready works on first open AND on reopen (where the
+  -- page is already loaded, so it fires immediately).
+  local tries = 0
+  local function pump()
+    if not M.settings then return end
+    tries = tries + 1
+    M.settings:evaluateJavaScript("window.__ready === true ? 'yes' : 'no'", function(ready)
+      if ready == "yes" then
+        M.settings:evaluateJavaScript("load(" .. hs.json.encode(M.config) .. ","
+          .. hs.json.encode(M.permissionStatus()) .. "," .. hs.json.encode(screenList()) .. ","
+          .. hs.json.encode(recentsForSettings()) .. ")")
+      elseif tries < 60 then
+        hs.timer.doAfter(0.05, pump)
+      end
+    end)
+  end
+  pump()
 end
 
 -- Pull live session state from configured SSH hosts, non-blocking.

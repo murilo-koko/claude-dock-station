@@ -82,6 +82,7 @@
   <script>
     let cfg = {};
     let hk = { mods:[], key:'' };
+    let loaded = false;   // true only once load() has populated the form from real config
     function msg(o){ window.webkit.messageHandlers.dockcfg.postMessage(o); }
     function fmtHk(h){ return (h.mods||[]).map(m=>({cmd:'⌘',shift:'⇧',alt:'⌥',ctrl:'⌃'}[m]||m)).join('') + (h.key||'').toUpperCase(); }
     function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -125,6 +126,7 @@
         (perm.accessibility ? '✅' : '❌') + ' Acessibilidade   ' +
         (perm.screen ? '✅' : '❌') + ' Gravação de Tela';
       renderRecents(recents);
+      loaded = true;   // form now mirrors real config; save() is allowed
     }
     function setHotkey(h){ hk = h; document.getElementById('hk').textContent = fmtHk(h); }
     function record(){ document.getElementById('hk').textContent = 'aperte a combinação…'; msg({action:'recordHotkey'}); }
@@ -136,6 +138,11 @@
       document.getElementById('cfg-bar').style.display    = v === 'bar'    ? '' : 'none';
     }
     function save(){
+      // Never write a form that was never populated. A fixed-delay load() could fire
+      // against a not-yet-ready DOM, leaving every field blank; saving that blank form
+      // used to overwrite the whole config with empty/false values (host_app="",
+      // hotkey cleared, menu bar off). Refuse instead of clobbering.
+      if(!loaded){ alert('As configurações ainda não carregaram — feche e reabra o painel.'); return; }
       msg({ action:'save', config: {
         hotkey: hk,
         shells: { overlay:s_overlay.checked, menubar:s_menubar.checked, view: document.getElementById('view').value },
@@ -154,5 +161,9 @@
         project_containers: cfg.project_containers,
       }});
     }
+    // Runs after the whole DOM is parsed (script sits at end of body). The engine polls
+    // this flag and only calls load() once it is true, so the form is never populated
+    // against an empty document — the race that left every dropdown (incl. Monitor) blank.
+    window.__ready = true;
   </script>
 </body></html>

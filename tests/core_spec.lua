@@ -54,6 +54,28 @@ t.eq(core.to_card({session_id="e4",cwd="/production",state="done",updated_at=100
 t.eq(core.to_card({session_id="e5",cwd="/opt/dev/arcade/tracking-gateway",state="done",updated_at=100},100).project,
      "tracking-gateway", "no window: falls back to the leaf subproject")
 
+t.describe("a session in the home dir is labeled ~, not after the home's owner")
+-- A session started from the bare home dir (or ~/.claude) is not in a project. Labeling it
+-- after the home's leaf segment reads as a fake project named after the user ('dev', 'claude').
+-- Same signal upsert_recent uses to keep these out of the launcher. Marker: '~'.
+t.eq(core.to_card({session_id="h1",cwd="/Users/dev",home="/Users/dev",state="working",updated_at=100},100).project,
+     "~", "local home dir -> ~, not the owning segment")
+t.eq(core.to_card({session_id="h2",cwd="/home/claude",home="/home/claude",state="working",updated_at=100,host="my-vps"},100).project,
+     "~", "remote home dir -> ~, not 'claude'")
+t.eq(core.to_card({session_id="h3",cwd="/Users/dev/.claude/plugins/cache",home="/Users/dev",state="working",updated_at=100},100).project,
+     "~", "inside ~/.claude -> ~ (Claude's own cache is not a project)")
+-- A real project must NOT be hijacked just because home is set.
+t.eq(core.to_card({session_id="h4",cwd="/opt/apps/webapp",home="/home/claude",root="/opt/apps/webapp",state="working",updated_at=100,host="my-vps"},100).project,
+     "webapp", "a real project with home set keeps its own name")
+-- home absent (old hook) -> unchanged, no regression.
+t.eq(core.to_card({session_id="h5",cwd="/Users/dev",state="working",updated_at=100},100).project,
+     "dev", "home absent (old hook) -> previous behaviour, labeled by segment")
+-- The final deck path (build_deck overrides to_card's project) must agree.
+local hdeck = core.build_deck({
+  { session_id="hh", cwd="/Users/dev", home="/Users/dev", state="working", updated_at=100 },
+}, {}, 100, {})
+t.eq(hdeck[1].project, "~", "build_deck also labels a home-dir session ~")
+
 t.describe("window-anchored label for deploy-layout cwds")
 -- The VS Code window title shows the workspace ROOT folder, which sits ABOVE the session
 -- cwd (…/webapp/production/repo runs under a window opened at 'webapp'). The label and
